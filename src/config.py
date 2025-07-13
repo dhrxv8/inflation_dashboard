@@ -129,8 +129,8 @@ MODEL_PARAMS = {
         "changepoint_prior_scale": 0.05
     },
     "ENSEMBLE": {
-        "models": ["ARIMA", "PROPHET", "LINEAR_TREND"],
-        "weights": [0.4, 0.4, 0.2]
+        "models": ["ARIMA", "PROPHET"],
+        "weights": [0.5, 0.5]
     }
 }
 
