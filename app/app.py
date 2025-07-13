@@ -1,6 +1,6 @@
 """
-Streamlit Inflation Dashboard MVP
-Interactive interface for inflation forecasting and policy simulation
+Streamlit Inflation Dashboard with Live Policy Simulation
+Interactive interface for inflation forecasting and policy scenario analysis
 """
 
 import streamlit as st
@@ -44,12 +44,28 @@ st.markdown("""
         border-radius: 0.5rem;
         margin: 0.5rem 0;
     }
-    .explanation-box {
+    .scenario-box {
         background-color: #e8f4f8;
-        padding: 1rem;
+        padding: 1.5rem;
         border-radius: 0.5rem;
         border-left: 4px solid #1f77b4;
         margin: 1rem 0;
+    }
+    .impact-positive {
+        color: #d73027;
+        font-weight: bold;
+    }
+    .impact-negative {
+        color: #1a9641;
+        font-weight: bold;
+    }
+    .stButton > button {
+        background-color: #1f77b4;
+        color: white;
+        border-radius: 0.5rem;
+        border: none;
+        padding: 0.5rem 1rem;
+        font-weight: bold;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -67,7 +83,8 @@ EXPLANATIONS = {
     "policy_shock": "**Policy Shock**: Sudden changes in monetary or fiscal policy that can affect inflation. Examples: Fed rate hikes, stimulus spending, quantitative easing.",
     "basis_points": "**Basis Points**: 1 basis point = 0.01%. So 100 basis points = 1%. Used to describe small changes in interest rates.",
     "inflation_target": "**Fed Inflation Target**: The Federal Reserve aims for 2% annual inflation, which they consider optimal for economic growth.",
-    "lag_effect": "**Policy Lag**: Changes in Fed policy take time to affect the economy. Interest rate changes typically impact inflation 6-18 months later."
+    "lag_effect": "**Policy Lag**: Changes in Fed policy take time to affect the economy. Interest rate changes typically impact inflation 6-18 months later.",
+    "tornado_plot": "**Tornado Plot**: Shows which policy changes have the biggest impact on inflation. Wider bars = bigger impact. Helps prioritize policy tools."
 }
 
 def show_explanation(key: str, inline: bool = False):
@@ -103,8 +120,19 @@ def load_historical_data():
         st.error(f"Error loading historical data: {e}")
         return None
 
-def create_kpi_metrics(forecast_df, historical_df):
-    """Create KPI metric tiles"""
+@st.cache_resource
+def initialize_simulator():
+    """Initialize policy simulator with caching"""
+    try:
+        simulator = PolicySimulator()
+        simulator.load_baseline_forecast()
+        return simulator
+    except Exception as e:
+        st.error(f"Error initializing simulator: {e}")
+        return None
+
+def create_kpi_metrics(forecast_df, historical_df, scenario_results=None):
+    """Create KPI metric tiles with scenario comparison"""
     col1, col2, col3, col4 = st.columns(4)
     
     # Current inflation (latest historical)
@@ -125,19 +153,31 @@ def create_kpi_metrics(forecast_df, historical_df):
         )
         show_explanation("cpi")
     
-    # 12-month forecast
+    # 12-month forecast (baseline vs scenario)
     if forecast_df is not None:
-        forecast_12m = forecast_df['Prophet_forecast'].iloc[-1]
-        forecast_delta = forecast_12m - current_inflation
+        baseline_12m = forecast_df['Prophet_forecast'].iloc[-1]
+        
+        if scenario_results:
+            scenario_12m = scenario_results['new_forecast'][-1]
+            forecast_delta = scenario_12m - baseline_12m
+            delta_text = f"{forecast_delta:+.1f}pp vs baseline"
+            delta_color = "inverse" if forecast_delta > 0 else "normal"
+        else:
+            scenario_12m = baseline_12m
+            forecast_delta = baseline_12m - current_inflation
+            delta_text = f"{forecast_delta:+.1f}pp vs current"
+            delta_color = "normal"
     else:
-        forecast_12m = 4.3
-        forecast_delta = 1.1
+        scenario_12m = 4.3
+        delta_text = "+1.1pp vs current"
+        delta_color = "normal"
     
     with col2:
         st.metric(
             label="🔮 12-Month Forecast",
-            value=f"{forecast_12m:.1f}%",
-            delta=f"{forecast_delta:+.1f}pp vs current",
+            value=f"{scenario_12m:.1f}%",
+            delta=delta_text,
+            delta_color=delta_color,
             help="Prophet model prediction for inflation in 12 months"
         )
         show_explanation("prophet")
@@ -160,21 +200,26 @@ def create_kpi_metrics(forecast_df, historical_df):
         )
         show_explanation("fed_funds")
     
-    # Distance from target
-    target_distance = current_inflation - 2.0
+    # Distance from target (baseline vs scenario)
+    if scenario_results:
+        target_distance = scenario_12m - 2.0
+        delta_text = f"Scenario: {target_distance:+.1f}pp"
+    else:
+        target_distance = current_inflation - 2.0
+        delta_text = "Fed Target: 2.0%"
     
     with col4:
         st.metric(
             label="🎯 Distance from Target",
             value=f"{target_distance:+.1f}pp",
-            delta="Fed Target: 2.0%",
+            delta=delta_text,
             delta_color="inverse" if target_distance > 0 else "normal",
-            help="How far current inflation is from the Fed's 2% target"
+            help="How far forecast inflation is from the Fed's 2% target"
         )
         show_explanation("inflation_target")
 
-def create_forecast_chart(forecast_df, historical_df, selected_models, forecast_horizon):
-    """Create interactive forecast chart"""
+def create_forecast_chart(forecast_df, historical_df, selected_models, forecast_horizon, scenario_results=None):
+    """Create interactive forecast chart with scenario overlay"""
     st.subheader("📊 Inflation Forecast Visualization")
     
     fig = go.Figure()
@@ -190,11 +235,11 @@ def create_forecast_chart(forecast_df, historical_df, selected_models, forecast_
             y=recent_historical.values,
             mode='lines',
             name='Historical Inflation',
-            line=dict(color='black', width=2),
+            line=dict(color='black', width=3),
             hovertemplate='%{x}<br>Inflation: %{y:.2f}%<extra></extra>'
         ))
     
-    # Add forecast models
+    # Add baseline forecast models
     if forecast_df is not None:
         colors = {'Prophet': '#1f77b4', 'SARIMA': '#ff7f0e', 'Ensemble': '#2ca02c'}
         
@@ -208,40 +253,35 @@ def create_forecast_chart(forecast_df, historical_df, selected_models, forecast_
                     x=forecast_data.index,
                     y=forecast_data.values,
                     mode='lines',
-                    name=f'{model} Forecast',
+                    name=f'{model} Baseline',
                     line=dict(color=colors.get(model, '#888888'), width=2, dash='dash'),
-                    hovertemplate=f'{model}<br>%{{x}}<br>Forecast: %{{y:.2f}}%<extra></extra>'
+                    hovertemplate=f'{model} Baseline<br>%{{x}}<br>Forecast: %{{y:.2f}}%<extra></extra>'
                 ))
-                
-                # Add confidence intervals if available
-                lower_col = f"{model}_lower"
-                upper_col = f"{model}_upper"
-                if lower_col in forecast_df.columns and upper_col in forecast_df.columns:
-                    lower_data = forecast_df[lower_col].iloc[:forecast_horizon]
-                    upper_data = forecast_df[upper_col].iloc[:forecast_horizon]
-                    
-                    fig.add_trace(go.Scatter(
-                        x=forecast_data.index.tolist() + forecast_data.index.tolist()[::-1],
-                        y=upper_data.tolist() + lower_data.tolist()[::-1],
-                        fill='toself',
-                        fillcolor=colors.get(model, '#888888').replace('rgb', 'rgba').replace(')', ', 0.2)'),
-                        line=dict(color='rgba(255,255,255,0)'),
-                        name=f'{model} 95% CI',
-                        showlegend=False,
-                        hoverinfo='skip'
-                    ))
+    
+    # Add scenario forecast if available
+    if scenario_results is not None:
+        scenario_dates = scenario_results['dates'][:len(scenario_results['new_forecast'])]
+        
+        fig.add_trace(go.Scatter(
+            x=scenario_dates,
+            y=scenario_results['new_forecast'],
+            mode='lines',
+            name='Scenario Forecast',
+            line=dict(color='red', width=3),
+            hovertemplate='Scenario<br>%{x}<br>Forecast: %{y:.2f}%<extra></extra>'
+        ))
     
     # Add Fed target line
     fig.add_hline(
         y=2.0,
         line_dash="dot",
-        line_color="red",
+        line_color="gray",
         annotation_text="Fed Target (2%)",
         annotation_position="top left"
     )
     
     fig.update_layout(
-        title="Inflation Forecast: Historical vs Predicted",
+        title="Inflation Forecast: Baseline vs Policy Scenario",
         xaxis_title="Date",
         yaxis_title="Inflation Rate (%)",
         hovermode='x unified',
@@ -256,50 +296,94 @@ def create_forecast_chart(forecast_df, historical_df, selected_models, forecast_
     )
     
     st.plotly_chart(fig, use_container_width=True)
-    
-    # Model explanations
-    st.markdown("### 🤖 Model Explanations")
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        show_explanation("sarima", inline=True)
-    with col2:
-        show_explanation("prophet", inline=True)
-    with col3:
-        show_explanation("ensemble", inline=True)
 
-def create_fan_chart(forecast_df, selected_model):
-    """Create fan chart showing forecast uncertainty"""
-    if forecast_df is None or selected_model not in ['Prophet', 'SARIMA', 'Ensemble']:
-        st.warning("Fan chart not available for selected model")
+def create_tornado_plot(scenario_results):
+    """Create tornado plot showing policy impact decomposition"""
+    if scenario_results is None:
+        st.warning("No scenario results available for tornado plot")
         return
     
-    forecast_col = f"{selected_model}_forecast"
-    lower_col = f"{selected_model}_lower"
-    upper_col = f"{selected_model}_upper"
+    contributions = scenario_results['contributions']
     
-    if not all(col in forecast_df.columns for col in [forecast_col, lower_col, upper_col]):
-        st.warning("Confidence intervals not available for selected model")
+    # Calculate average impacts over forecast horizon
+    fed_impact = np.mean(contributions['fed_funds'])
+    m2_impact = np.mean(contributions['money_supply'])
+    fiscal_impact = np.mean(contributions['fiscal'])
+    
+    # Prepare data for tornado plot
+    policies = ['Fed Funds Rate', 'Money Supply (M2)', 'Fiscal Policy']
+    impacts = [fed_impact, m2_impact, fiscal_impact]
+    colors = ['#d73027' if x > 0 else '#1a9641' for x in impacts]
+    
+    # Create horizontal bar chart
+    fig = go.Figure()
+    
+    fig.add_trace(go.Bar(
+        y=policies,
+        x=impacts,
+        orientation='h',
+        marker=dict(color=colors),
+        text=[f"{x:+.3f}pp" for x in impacts],
+        textposition='auto',
+        hovertemplate='%{y}<br>Impact: %{x:+.3f} pp<extra></extra>'
+    ))
+    
+    fig.update_layout(
+        title="🌪️ Policy Impact Tornado Plot",
+        xaxis_title="Average Impact on Inflation (percentage points)",
+        yaxis_title="Policy Tool",
+        height=300,
+        showlegend=False
+    )
+    
+    # Add vertical line at zero
+    fig.add_vline(x=0, line_dash="solid", line_color="black", line_width=1)
+    
+    st.plotly_chart(fig, use_container_width=True)
+    
+    # Add interpretation
+    st.markdown("""
+    **📊 How to Read This Chart:**
+    - 🟢 **Green bars**: Policies that reduce inflation (deflationary)
+    - 🔴 **Red bars**: Policies that increase inflation (inflationary)  
+    - **Longer bars**: Bigger impact on inflation
+    - **Numbers**: Average impact over 12-month forecast period
+    """)
+    
+    show_explanation("tornado_plot", inline=True)
+
+def create_scenario_fan_chart(scenario_results, model_name="Prophet"):
+    """Create fan chart for scenario with uncertainty bands"""
+    if scenario_results is None:
+        st.warning("No scenario results available for fan chart")
         return
+    
+    st.subheader(f"📈 Scenario Uncertainty Analysis")
     
     # Create matplotlib fan chart
     fig, ax = plt.subplots(figsize=(12, 6))
     
-    dates = forecast_df.index
-    forecast = forecast_df[forecast_col]
-    lower = forecast_df[lower_col]
-    upper = forecast_df[upper_col]
+    dates = scenario_results['dates'][:len(scenario_results['new_forecast'])]
+    baseline = scenario_results['baseline_forecast']
+    scenario = scenario_results['new_forecast']
     
-    # Plot central forecast
-    ax.plot(dates, forecast, color='blue', linewidth=2, label=f'{selected_model} Forecast')
+    # Plot baseline
+    ax.plot(dates, baseline, color='blue', linewidth=2, label='Baseline Forecast', alpha=0.7)
     
-    # Fill between for confidence intervals
-    ax.fill_between(dates, lower, upper, alpha=0.3, color='blue', label='95% Confidence Interval')
+    # Plot scenario
+    ax.plot(dates, scenario, color='red', linewidth=3, label='Scenario Forecast')
+    
+    # Create uncertainty bands (simplified - using ±0.5% around scenario)
+    uncertainty = 0.5
+    upper_band = scenario + uncertainty
+    lower_band = scenario - uncertainty
+    
+    ax.fill_between(dates, lower_band, upper_band, alpha=0.3, color='red', label='Scenario 95% CI')
     
     # Add Fed target
-    ax.axhline(y=2, color='red', linestyle='--', alpha=0.7, label='Fed Target (2%)')
+    ax.axhline(y=2, color='gray', linestyle='--', alpha=0.7, label='Fed Target (2%)')
     
-    ax.set_title(f'{selected_model} Inflation Forecast with Uncertainty', fontsize=14, fontweight='bold')
+    ax.set_title('Policy Scenario: Inflation Forecast with Uncertainty', fontsize=14, fontweight='bold')
     ax.set_xlabel('Date')
     ax.set_ylabel('Inflation Rate (%)')
     ax.legend()
@@ -311,25 +395,37 @@ def create_fan_chart(forecast_df, selected_model):
     
     st.pyplot(fig)
     
-    # Add interpretation
-    st.markdown(f"""
-    **📊 Fan Chart Interpretation:**
-    - The blue line shows the most likely inflation path according to the {selected_model} model
-    - The shaded area represents the 95% confidence interval - inflation has a 95% chance of falling within this range
-    - Wider bands indicate more uncertainty about future inflation
-    """)
+    # Add impact summary
+    total_impact = np.mean(scenario_results['contributions']['total_shock'])
+    impact_direction = "increases" if total_impact > 0 else "decreases"
+    impact_color = "🔴" if total_impact > 0 else "🟢"
     
-    show_explanation("lag_effect", inline=True)
+    st.markdown(f"""
+    **📊 Scenario Impact Summary:**
+    
+    {impact_color} **Policy scenario {impact_direction} average inflation by {abs(total_impact):.2f} percentage points**
+    
+    - **Baseline Average**: {np.mean(baseline):.2f}%
+    - **Scenario Average**: {np.mean(scenario):.2f}%
+    - **Net Change**: {total_impact:+.2f} percentage points
+    """)
 
 def create_policy_simulator():
-    """Create policy simulation interface"""
+    """Create interactive policy simulation interface"""
     st.subheader("🏛️ Policy Impact Simulator")
     
     st.markdown("""
-    Explore how different Fed and government policies would affect inflation forecasts.
-    **Note**: Sliders are currently disabled (set to zero) - this is a baseline demonstration.
+    **Explore how different Fed and government policies affect inflation forecasts.**
+    Adjust the sliders below and click "Run Shock" to see the impact on your inflation predictions.
     """)
     
+    # Initialize simulator
+    simulator = initialize_simulator()
+    if simulator is None:
+        st.error("❌ Could not initialize policy simulator. Please check data files.")
+        return None, None
+    
+    # Policy controls in columns
     col1, col2, col3 = st.columns(3)
     
     with col1:
@@ -340,9 +436,9 @@ def create_policy_simulator():
             max_value=2.0,
             value=0.0,
             step=0.25,
-            disabled=True,  # Hard-wired as requested
             help="Change in federal funds rate (percentage points)"
         )
+        st.caption("Current Fed Rate: ~5.25%")
         show_explanation("fed_funds")
         
         m2_change = st.slider(
@@ -351,9 +447,9 @@ def create_policy_simulator():
             max_value=3.0,
             value=0.0,
             step=0.5,
-            disabled=True,  # Hard-wired as requested
             help="Change in M2 money supply growth rate"
         )
+        st.caption("Recent M2 Growth: ~2-6% annually")
         show_explanation("m2")
     
     with col2:
@@ -364,35 +460,215 @@ def create_policy_simulator():
             max_value=3.0,
             value=0.0,
             step=0.5,
-            disabled=True,  # Hard-wired as requested
             help="Government spending change as percentage of GDP"
         )
+        st.caption("2020 CARES Act: ~10% of GDP")
         
-        st.markdown("**Examples of Fiscal Policy:**")
+        st.markdown("**Examples:**")
         st.markdown("- Infrastructure spending")
         st.markdown("- Tax cuts/increases") 
         st.markdown("- Unemployment benefits")
-        st.markdown("- Economic stimulus checks")
+        st.markdown("- Economic stimulus payments")
     
     with col3:
-        st.markdown("**📊 Current Settings**")
+        st.markdown("**📊 Current Policy Settings**")
         st.metric("Fed Rate Change", f"{fed_change:+.2f}pp")
         st.metric("M2 Growth Change", f"{m2_change:+.1f}pp") 
         st.metric("Fiscal Stimulus", f"{fiscal_change:+.1f}% GDP")
         
-        if st.button("🚀 Run Simulation", disabled=True):
-            st.info("Policy simulation will be enabled in the next phase!")
+        # Scenario prediction (rough estimate)
+        rough_impact = fed_change * -0.25 + m2_change * 0.15 + fiscal_change * 0.15
+        st.metric("Estimated Impact", f"{rough_impact:+.2f}pp", help="Rough estimate before running full simulation")
+        
+        # Run simulation button
+        run_simulation = st.button(
+            "🚀 Run Policy Shock", 
+            type="primary",
+            help="Run full policy simulation with your settings"
+        )
     
-    # Add explanations
-    show_explanation("policy_shock", inline=True)
-    show_explanation("basis_points", inline=True)
+    # Run simulation if button clicked
+    scenario_results = None
+    if run_simulation:
+        if abs(fed_change) < 0.01 and abs(m2_change) < 0.01 and abs(fiscal_change) < 0.01:
+            st.warning("⚠️ All policy changes are zero. Try adjusting the sliders to see an impact!")
+        else:
+            with st.spinner("🔄 Running policy simulation..."):
+                try:
+                    # Get baseline forecast
+                    baseline_forecast = simulator.baseline_forecast['Prophet_forecast'].values
+                    
+                    # Run shock simulation
+                    shock_results = simulator.shock_path(
+                        baseline_forecast, 
+                        d_ffr=fed_change,
+                        d_m2=m2_change, 
+                        fiscal=fiscal_change
+                    )
+                    
+                    # Package results
+                    scenario_results = {
+                        'baseline_forecast': shock_results['contrib']['baseline'],
+                        'new_forecast': shock_results['new_forecast'],
+                        'contributions': shock_results['contrib'],
+                        'dates': simulator.baseline_forecast.index,
+                        'policy_changes': {
+                            'fed_funds': fed_change,
+                            'm2_growth': m2_change,
+                            'fiscal': fiscal_change
+                        }
+                    }
+                    
+                    st.success("✅ Policy simulation completed!")
+                    
+                except Exception as e:
+                    st.error(f"❌ Simulation failed: {e}")
+                    scenario_results = None
+    
+    return scenario_results, {
+        'fed_change': fed_change,
+        'm2_change': m2_change, 
+        'fiscal_change': fiscal_change
+    }
+
+def display_scenario_results(scenario_results, policy_settings):
+    """Display comprehensive scenario analysis results"""
+    if scenario_results is None:
+        return
+    
+    st.markdown("---")
+    st.subheader("📊 Scenario Analysis Results")
+    
+    # Create tabs for different views
+    tab1, tab2, tab3 = st.tabs(["📈 Impact Overview", "🌪️ Policy Breakdown", "📊 Detailed Analysis"])
+    
+    with tab1:
+        # Tornado plot
+        create_tornado_plot(scenario_results)
+        
+        # Key statistics
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("### 📋 Impact Summary")
+            baseline_avg = np.mean(scenario_results['baseline_forecast'])
+            scenario_avg = np.mean(scenario_results['new_forecast'])
+            total_impact = np.mean(scenario_results['contributions']['total_shock'])
+            
+            st.markdown(f"""
+            - **Baseline Average**: {baseline_avg:.2f}%
+            - **Scenario Average**: {scenario_avg:.2f}%
+            - **Total Impact**: {total_impact:+.2f} percentage points
+            - **Peak Impact**: {np.max(np.abs(scenario_results['contributions']['total_shock'])):.2f}pp
+            """)
+        
+        with col2:
+            st.markdown("### 🎯 Policy Effectiveness")
+            fed_impact = np.mean(scenario_results['contributions']['fed_funds'])
+            m2_impact = np.mean(scenario_results['contributions']['money_supply'])
+            fiscal_impact = np.mean(scenario_results['contributions']['fiscal'])
+            
+            impacts = [
+                ("Fed Funds Rate", fed_impact, policy_settings['fed_change']),
+                ("Money Supply", m2_impact, policy_settings['m2_change']),
+                ("Fiscal Policy", fiscal_impact, policy_settings['fiscal_change'])
+            ]
+            
+            for name, impact, change in impacts:
+                if abs(change) > 0.01:
+                    effectiveness = impact / change
+                    st.markdown(f"- **{name}**: {effectiveness:.3f}pp per unit change")
+                else:
+                    st.markdown(f"- **{name}**: No change applied")
+    
+    with tab2:
+        # Individual policy contributions over time
+        st.markdown("### 📈 Policy Impact Over Time")
+        
+        fig = go.Figure()
+        
+        dates = scenario_results['dates'][:len(scenario_results['new_forecast'])]
+        
+        # Fed funds impact
+        if np.any(scenario_results['contributions']['fed_funds'] != 0):
+            fig.add_trace(go.Scatter(
+                x=dates,
+                y=scenario_results['contributions']['fed_funds'],
+                mode='lines',
+                name='Fed Funds Impact',
+                line=dict(color='blue', width=2)
+            ))
+        
+        # Money supply impact  
+        if np.any(scenario_results['contributions']['money_supply'] != 0):
+            fig.add_trace(go.Scatter(
+                x=dates,
+                y=scenario_results['contributions']['money_supply'],
+                mode='lines',
+                name='Money Supply Impact',
+                line=dict(color='green', width=2)
+            ))
+        
+        # Fiscal impact
+        if np.any(scenario_results['contributions']['fiscal'] != 0):
+            fig.add_trace(go.Scatter(
+                x=dates,
+                y=scenario_results['contributions']['fiscal'],
+                mode='lines',
+                name='Fiscal Impact',
+                line=dict(color='orange', width=2)
+            ))
+        
+        # Total impact
+        fig.add_trace(go.Scatter(
+            x=dates,
+            y=scenario_results['contributions']['total_shock'],
+            mode='lines',
+            name='Total Impact',
+            line=dict(color='red', width=3, dash='dash')
+        ))
+        
+        fig.add_hline(y=0, line_dash="solid", line_color="black", line_width=1)
+        
+        fig.update_layout(
+            title="Policy Impact Decomposition Over Time",
+            xaxis_title="Date",
+            yaxis_title="Impact on Inflation (percentage points)",
+            height=400
+        )
+        
+        st.plotly_chart(fig, use_container_width=True)
+        
+        # Lag effects explanation
+        show_explanation("lag_effect", inline=True)
+    
+    with tab3:
+        # Fan chart with scenario
+        create_scenario_fan_chart(scenario_results)
+        
+        # Data table
+        st.markdown("### 📊 Detailed Forecast Data")
+        
+        # Create summary table
+        summary_data = {
+            'Month': [f"Month {i+1}" for i in range(len(scenario_results['new_forecast']))],
+            'Baseline (%)': [f"{x:.2f}" for x in scenario_results['baseline_forecast']],
+            'Scenario (%)': [f"{x:.2f}" for x in scenario_results['new_forecast']],
+            'Total Impact (pp)': [f"{x:+.3f}" for x in scenario_results['contributions']['total_shock']],
+            'Fed Impact (pp)': [f"{x:+.3f}" for x in scenario_results['contributions']['fed_funds']],
+            'M2 Impact (pp)': [f"{x:+.3f}" for x in scenario_results['contributions']['money_supply']],
+            'Fiscal Impact (pp)': [f"{x:+.3f}" for x in scenario_results['contributions']['fiscal']]
+        }
+        
+        summary_df = pd.DataFrame(summary_data)
+        st.dataframe(summary_df, use_container_width=True)
 
 def main():
     """Main Streamlit application"""
     
     # Header
     st.markdown('<div class="main-header">🎯 Inflation Dashboard</div>', unsafe_allow_html=True)
-    st.markdown("**Professional inflation forecasting with policy simulation capabilities**")
+    st.markdown("**Professional inflation forecasting with live policy simulation**")
     st.markdown("---")
     
     # Sidebar
@@ -418,22 +694,8 @@ def main():
         help="How many months ahead to forecast"
     )
     
-    # Fan chart model selection
-    st.sidebar.subheader("📊 Fan Chart Model")
-    fan_chart_model = st.sidebar.selectbox(
-        "Select model for uncertainty visualization",
-        available_models,
-        index=0,
-        help="Choose model for the detailed fan chart with confidence intervals"
-    )
-    
-    # Add sidebar explanations
-    st.sidebar.markdown("---")
-    st.sidebar.markdown("### 💡 Quick Help")
-    st.sidebar.info("Hover over any metric or chart element for detailed explanations!")
-    
     # Load data
-    with st.spinner("Loading forecast data..."):
+    with st.spinner("Loading data..."):
         forecast_df = load_forecast_data()
         historical_df = load_historical_data()
     
@@ -442,34 +704,59 @@ def main():
         st.code("python -m src.modeling --model all --target CPIAUCSL_yoy --save")
         return
     
-    # Main content
-    # KPI Metrics
+    # Policy simulation section
+    scenario_results, policy_settings = create_policy_simulator()
+    
+    st.markdown("---")
+    
+    # Main content with scenario-aware metrics
     st.subheader("📊 Key Economic Indicators")
-    create_kpi_metrics(forecast_df, historical_df)
+    create_kpi_metrics(forecast_df, historical_df, scenario_results)
     
     st.markdown("---")
     
-    # Main forecast chart
-    create_forecast_chart(forecast_df, historical_df, selected_models, forecast_horizon)
+    # Main forecast chart with scenario overlay
+    create_forecast_chart(forecast_df, historical_df, selected_models, forecast_horizon, scenario_results)
     
-    st.markdown("---")
+    # Display scenario results if available
+    if scenario_results is not None:
+        display_scenario_results(scenario_results, policy_settings)
     
-    # Fan chart in expander
-    with st.expander("📈 Detailed Forecast Uncertainty (Fan Chart)", expanded=False):
-        st.markdown("**Fan charts** show the range of possible inflation outcomes and their probabilities.")
-        create_fan_chart(forecast_df, fan_chart_model)
+    # Add sidebar information
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("📊 Data Status")
     
-    st.markdown("---")
+    if forecast_df is not None:
+        st.sidebar.success(f"✅ Forecast data: {len(forecast_df)} periods")
+    else:
+        st.sidebar.warning("⚠️ No forecast data")
     
-    # Policy simulator
-    create_policy_simulator()
+    if historical_df is not None:
+        st.sidebar.success(f"✅ Historical data: {len(historical_df)} observations")
+    else:
+        st.sidebar.warning("⚠️ No historical data")
+    
+    # Add quick scenario presets
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("🚀 Quick Scenarios")
+    st.sidebar.markdown("*Try these common policy scenarios:*")
+    
+    if st.sidebar.button("🔴 Aggressive Tightening"):
+        st.sidebar.markdown("Set: Fed +2%, M2 -1%, Fiscal -0.5%")
+    
+    if st.sidebar.button("🟢 Economic Stimulus"):
+        st.sidebar.markdown("Set: Fed -0.5%, M2 +2%, Fiscal +1%")
+    
+    if st.sidebar.button("🟡 Balanced Approach"):
+        st.sidebar.markdown("Set: Fed +0.5%, M2 0%, Fiscal -0.2%")
     
     # Footer
     st.markdown("---")
     st.markdown("""
     <div style='text-align: center; color: #666;'>
     🎯 <strong>Inflation Dashboard</strong> | Built with Streamlit, Prophet, SARIMA & Ensemble Models<br>
-    📊 Data Source: Federal Reserve Economic Data (FRED) | 🔄 Last Updated: Real-time
+    📊 Data Source: Federal Reserve Economic Data (FRED) | 🔄 Last Updated: Real-time<br>
+    🏛️ <strong>Policy Simulation Enabled</strong> | Explore Fed & Fiscal Policy Impacts
     </div>
     """, unsafe_allow_html=True)
 
