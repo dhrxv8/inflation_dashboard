@@ -1,0 +1,59 @@
+.
+├── app
+│   ├── app.py
+│   └── test_app.py
+├── data
+│   ├── forecasts
+│   │   ├── CPIAUCSL_yoy_forecasts.csv
+│   │   ├── ensemble_model_Ensemble.pkl
+│   │   ├── prophet_model_Prophet.pkl
+│   │   └── sarima_model_SARIMA.pkl
+│   ├── processed
+│   │   ├── beta_coefficients.json
+│   │   └── feature_table.csv
+│   └── raw
+│       ├── CPIAUCSL.csv
+│       ├── CPILFESL.csv
+│       ├── DCOILWTICO.csv
+│       ├── DGS10.csv
+│       ├── DGS2.csv
+│       ├── DTWEXBGS.csv
+│       ├── FEDFUNDS.csv
+│       ├── GDP.csv
+│       ├── HOUST.csv
+│       ├── INDPRO.csv
+│       ├── M1SL.csv
+│       ├── M2SL.csv
+│       ├── MORTGAGE30US.csv
+│       ├── PAYEMS.csv
+│       ├── PCEPI.csv
+│       ├── PCEPILFE.csv
+│       ├── PPIACO.csv
+│       ├── PPIFCG.csv
+│       ├── TEST_SERIES_etag.txt
+│       ├── TEST_SERIES.csv
+│       └── UNRATE.csv
+├── notebooks
+│   ├── 01_eda.ipynb
+│   ├── 02_model_selection.ipynb
+│   └── 03_beta_calibration.ipynb
+├── performance_test.py
+├── project_structure.txt
+├── requirements.txt
+├── src
+│   ├── __init__.py
+│   ├── config.py
+│   ├── config.py.backup
+│   ├── dashboard.py
+│   ├── data_fetcher.py
+│   ├── data_ingest.py
+│   ├── features.py
+│   ├── modeling.py
+│   ├── simulator.py
+│   └── utils.py
+├── test_app.py
+└── tests
+    ├── __init__.py
+    └── test_data_ingest.py
+
+9 directories, 48 files
